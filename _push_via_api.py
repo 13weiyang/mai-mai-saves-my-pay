@@ -34,7 +34,8 @@ IGNORE_DIRS = {"_trash", ".git", "__pycache__", ".vscode", ".idea", ".pytest_cac
                ".workbuddy"}   # ⚠️ 2026-10-11 补：Agent 记忆与日志，绝不进公开仓库
 IGNORE_DIR_PREFIX = ("_tmp_",)
 IGNORE_FILES = ["预览-*.png", "*.bak*", "*.pyc", "mcd-token.txt", ".env",
-                "mcp-config.json", ".DS_Store", "Thumbs.db"]
+                "mcp-config.json", ".DS_Store", "Thumbs.db",
+                "workbuddy.md"]   # ⚠️ 2026-10-12：内部开发全过程记录，不上公开仓库
 
 
 def collect():
@@ -57,7 +58,7 @@ def api(method, path, payload, token):
     req = urllib.request.Request(API + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + token)
     req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("User-Agent", "tangyu-push")
+    req.add_header("User-Agent", "mai-mai-deploy")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=120) as r:

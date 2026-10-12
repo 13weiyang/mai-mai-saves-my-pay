@@ -911,12 +911,7 @@
          元素留着（display:none）只为 JS 不报错。 -->
     <div class="budget-warn" id="budgetWarn" style="display:none"></div>
 
-    <!-- ⚠️ 「🎯 帮我配一配」已退休（2026-10-10 方案A）：
-         它是"凑满减门槛"驱动的，而到店/外送没有满减 ⇒ 留着也是坏的。
-         （企业团餐那套能力**没删**，在引擎里留着。）
-         按钮留着（display:none）只为 JS 不报错。 -->
     <div class="action-row">
-      <button class="btn-auto" id="autoFillBtn" style="display:none">🎯 帮我配一配</button>
       <button class="btn-clear" id="clearBtn">清空重来</button>
     </div>
     <div class="action-note">
@@ -2644,7 +2639,6 @@ document.getElementById('customBudget').addEventListener('input', ()=>{
 // 点单表：点 − / + 改份数（事件委托 —— 菜单重绘后依然有效）
 document.getElementById('menu').addEventListener('click', onQtyClick);
 // 🎯 让算法把推荐份数**填进表里**（填完照样能改）
-document.getElementById('autoFillBtn').addEventListener('click', autoFill);
 // 清空重来
 document.getElementById('clearBtn').addEventListener('click', clearPicks);
 // 超预算提示里的「帮我砍到预算内」→ 同样交给算法重配
