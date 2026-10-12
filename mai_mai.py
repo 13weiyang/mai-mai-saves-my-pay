@@ -11,24 +11,21 @@ mai_mai.py — 麦麦真省薪 · 主程序
     # 2) 按位置搜店（会列出候选，让你挑）
     python mai_mai.py --city 北京 --keyword 嘉秀
 
-    # 3) 搜店 + 指定预算，直接出最省方案
-    python mai_mai.py --city 北京 --keyword 嘉秀 --budget 500
+    # 3) 先看看这家店有什么（不知道吃啥时用，带官方产品图链接）
+    python mai_mai.py --store 1950751 --show
 
-    # 4) 带孩子吃：先说清楚几个娃（每个娃配一份带玩具的儿童餐）
-    python mai_mai.py --store 1950751 --budget 500 --diners mixed --kids 2
+    # 4) 点名要什么（主路）—— 不用报预算
+    python mai_mai.py --store 1950751 --items "巨无霸,冰美式中杯"
 
-    # 5) 娃想吃哪款就点哪款（汉堡 / 鱼排堡 / 麦乐鸡）；不填=都行，最省
-    python mai_mai.py --store 1950751 --budget 500 --diners mixed --kids 2 \
-                      --kid-picks 汉堡,麦乐鸡
+    # 5) 算完直接下单（会有二次确认，确认后才真创建订单）
+    python mai_mai.py --store 1950751 --items "巨无霸" --order
 
-    # 6) 算完直接下单（会有二次确认，确认后才真创建订单）
-    python mai_mai.py --store 1950751 --budget 500 --order
-
-    # 7) 下单 + 指定取餐方式（堂食 eat-in / 外带 locker-in）
-    python mai_mai.py --store 1950751 --budget 500 --order --takeway 外带
+    # 6) 外送（会先逼你确认收货地址）
+    python mai_mai.py --city 北京 --keyword 嘉秀 --items "巨无霸" --order --delivery
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -39,7 +36,7 @@ from savings_engine import (
 )
 from store_finder import (
     Store, search_stores, format_store_list,
-    list_addresses, format_address_list, delivery_stores,
+    list_addresses, format_address_list, delivery_stores, create_address,
 )
 import order as order_api
 
@@ -112,41 +109,6 @@ def pick_store(client, city, keyword, store_code=None):
     if len(stores) > 1:
         print(f"   （默认取最近的一家：{stores[0].name}）\n")
     return stores[0], True
-
-
-def resolve_kid_picks(meals, kid_picks):
-    """把用户写的口味词（汉堡 / 鱼排堡 / 麦乐鸡…）解析成儿童餐 code 列表。
-
-    - kid_picks 为空/None → 返回 []（引擎里按「都行」处理，挑最省那款）
-    - 每个词按顺序对应一个娃；认得出来就点名，认不出来就留 "any"
-    - 匹配范围只限 kind == "kids" 的儿童餐
-    """
-    if not kid_picks:
-        return []
-    kid_meals = [m for m in meals.values() if m.get("kind") == "kids"]
-    out = []
-    for word in kid_picks:
-        w = (word or "").strip()
-        if not w or w in ("any", "都行", "随便"):
-            out.append("any")
-            continue
-        # 先精确命中名字，再退化成包含匹配
-        hit = None
-        for m in kid_meals:
-            if w == m["name"]:
-                hit = m
-                break
-        if hit is None:
-            for m in kid_meals:
-                if w in m["name"]:
-                    hit = m
-                    break
-        if hit is None:
-            print(f"   ⚠️ 没找到叫「{w}」的儿童餐，这一份就按最省的来。")
-            out.append("any")
-        else:
-            out.append(hit["code"])
-    return out
 
 
 # 用户口语里常带、菜单名里却没有的词 —— 匹配前先拿掉
@@ -408,10 +370,77 @@ def place_order(client, store, plan, meals, takeway=None,
     print()
 
 
-def run(store_code=None, city=None, keyword=None, budget=None,
-        diners="adult", kids=0, kid_picks=None,
+def _addr_from_file(client, path):
+    """从 JSON 文件读地址信息，新增一条收货地址，返回 Address（失败返回 None）。
+
+    ⚠️ 地址**走文件、不走命令行**：命令行参数会留在界面的操作记录里，
+       而地址不该出现在那儿（上课要共享屏幕）。
+    ⚠️ 新增是**写操作**，且官方没有删除接口 ⇒ 加之前必须二次确认。
+
+    文件字段（2026-10-11 由 `tools/list` 核实）：
+        必填 city / contactName / phone / address / addressDetail
+        选填 gender
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            info = json.load(f)
+    except FileNotFoundError:
+        print(f"⚠️ 找不到地址文件：{path}")
+        return None
+    except Exception as e:
+        print(f"⚠️ 地址文件读不了：{e}")
+        return None
+
+    if not isinstance(info, dict):
+        print("⚠️ 地址文件要是一个 JSON 对象（{}）")
+        return None
+
+    need = ["city", "contactName", "phone", "address", "addressDetail"]
+    missing = [k for k in need if not str(info.get(k, "")).strip()]
+    if missing:
+        print(f"⚠️ 地址文件缺字段：{', '.join(missing)}")
+        print("   需要 city / contactName / phone / address / addressDetail")
+        return None
+
+    phone = re.sub(r"\D", "", str(info["phone"]))
+    if not (len(phone) == 11 and phone.startswith("1")):
+        print(f"⚠️ 电话要 11 位纯数字（以 1 开头），现在拿到的是：{phone or '（空）'}")
+        return None
+
+    print("=" * 46)
+    print("  📦 新增收货地址（外送）—— 请核对")
+    print("=" * 46)
+    print(f"   {info['contactName'].strip()} {phone}")
+    print(f"   {info['city'].strip()}{info['address'].strip()}{info['addressDetail'].strip()}")
+    print()
+    print("   ⚠️ 这一步会**真的往账号里加一条地址**；官方没有删除接口，")
+    print("      要清只能你自己到麦当劳 App／小程序里删。")
+    ans = input("   新增这条地址？y 继续，其它中止：").strip().lower()
+    if ans != "y":
+        print("\n  ✓ 已中止，什么都没发生。")
+        return None
+
+    try:
+        addr = create_address(
+            client,
+            city=info["city"].strip(),
+            contact_name=info["contactName"].strip(),
+            phone=phone,
+            address=info["address"].strip(),
+            address_detail=info["addressDetail"].strip(),
+            gender=(info.get("gender") or "").strip() or None,
+        )
+    except Exception as e:
+        print(f"⚠️ 新增地址失败：{e}")
+        return None
+
+    print(f"\n  ✅ 已新增收货地址（id={addr.address_id}）")
+    return addr
+
+
+def run(store_code=None, city=None, keyword=None,
         do_order=False, takeway=None, remind=None, items=None, show=False,
-        delivery=False, address_idx=None):
+        delivery=False, address_idx=None, new_address_file=None):
     print("=" * 46)
     print(f"  {SLOGAN}")
     print("=" * 46)
@@ -433,30 +462,35 @@ def run(store_code=None, city=None, keyword=None, budget=None,
     if delivery:
         order_type, be_type = 2, 2
         # ---------- 必答②：送到哪？（外送唯一"送错就回不了头"的东西） ----------
-        addrs = list_addresses(client)
-        if not addrs:
-            print("⚠️ 账号里没有收货地址，没法外送。"
-                  "改走「到店自取」，或先在麦当劳 App 里加个地址。")
-            return
-        print("=" * 46)
-        print("  📦 送到哪儿？（外送地址 —— 请核对）")
-        print("=" * 46)
-        print(format_address_list(addrs))
-        print()
-        idx = 0
-        if address_idx and 1 <= address_idx <= len(addrs):
-            idx = address_idx - 1
-        elif len(addrs) > 1:
-            sel = input(f"   用哪个地址？输入编号（1-{len(addrs)}，回车=1）：").strip()
-            if sel.isdigit() and 1 <= int(sel) <= len(addrs):
-                idx = int(sel) - 1
-        addr = addrs[idx]
-        print(f"\n  ✅ 送到：{(addr.contact + ' ' + addr.phone).strip()}")
-        print(f"     {addr.full}")
-        ans = input("   这个地址对吗？y 继续，其它中止：").strip().lower()
-        if ans != "y":
-            print("\n  ✓ 已中止，什么都没发生。")
-            return
+        if new_address_file:
+            addr = _addr_from_file(client, new_address_file)
+            if addr is None:
+                return
+        else:
+            addrs = list_addresses(client)
+            if not addrs:
+                print("⚠️ 账号里没有收货地址，没法外送。"
+                      "改走「到店自取」，或先在麦当劳 App 里加个地址。")
+                return
+            print("=" * 46)
+            print("  📦 送到哪儿？（外送地址 —— 请核对）")
+            print("=" * 46)
+            print(format_address_list(addrs))
+            print()
+            idx = 0
+            if address_idx and 1 <= address_idx <= len(addrs):
+                idx = address_idx - 1
+            elif len(addrs) > 1:
+                sel = input(f"   用哪个地址？输入编号（1-{len(addrs)}，回车=1）：").strip()
+                if sel.isdigit() and 1 <= int(sel) <= len(addrs):
+                    idx = int(sel) - 1
+            addr = addrs[idx]
+            print(f"\n  ✅ 送到：{(addr.contact + ' ' + addr.phone).strip()}")
+            print(f"     {addr.full}")
+            ans = input("   这个地址对吗？y 继续，其它中止：").strip().lower()
+            if ans != "y":
+                print("\n  ✓ 已中止，什么都没发生。")
+                return
         # 找能送到这个地址的门店（外送必须带 beCode，不是门店编码）
         ds = delivery_stores(client, addr.address_id)
         if not ds:
@@ -491,13 +525,9 @@ def run(store_code=None, city=None, keyword=None, budget=None,
     meals = parse_meals(client.call("query-meals", menu_args))
     print(f"  菜单共 {len(meals)} 道餐品\n")
 
-    # ⚠️ 不再查 query-promotions —— 那套「满 300 减 22%」是企业团餐专属规则，
-    #    到店自取和麦乐送都用不上（2026-10-10 实测：大额单折扣恒为 0）。
-    #    真正的优惠只有两样：门店现价折扣 + 券。
-    promotions = []
-    # ⚠️ 满减拆掉后，下面「报预算配一桌」那两段已失效（依赖 tiers/满减）。
-    #    先保留 tiers=[] 兜底避免崩，等有空把这两段一并清掉。
-    tiers = []
+    # 不查 query-promotions —— 那是**企业团餐**（beType=6）专属规则，
+    # 到店自取和麦乐送都用不上，调它拿回来的优惠用户用不上、算出来的"省"是虚的。
+    # 普通点餐的优惠只有两样：门店现价折扣 + 券。
 
     # 🎫 券：**替用户领**（不是提醒他去领）—— 这是"你不用懂，也能用上"的落点
     print("… 正在替你把能领的券领了")
@@ -600,85 +630,11 @@ def run(store_code=None, city=None, keyword=None, budget=None,
         print(f"\n   {SLOGAN}")
         return
 
-    # ---------- 有预算：直接出最省方案 ----------
-    if budget:
-        dlabel = {"adult": "仅成人餐", "kids": "亲子餐", "mixed": "成人+亲子"}[diners]
-        print("=" * 46)
-        print(f"  💰 预算 ¥{budget} 怎么点最省（{dlabel}）")
-        print("=" * 46)
-        # 口味点名：把「汉堡 / 鱼排堡 / 麦乐鸡」这类名字解析成儿童餐 code
-        resolved_picks = resolve_kid_picks(meals, kid_picks)
-        plan = plan_cheapest(meals, promotions, budget,
-                             diners=diners, kids=kids,
-                             kid_picks=resolved_picks)
-        if plan:
-            kid_n = 0
-            fam_n = 0
-            for it in plan["items"]:
-                m = meals[it["code"]]
-                price = m["original_price"] or m["current_price"]
-                cnt = it.get("count", 1)
-                suffix = f" ×{cnt}" if cnt > 1 else ""
-                kind = m.get("kind")
-                tag = ""
-                if kind == "kids":
-                    tag = "  🧸"
-                    kid_n += cnt
-                elif kind == "family":
-                    tag = "  🎠"
-                    fam_n += cnt
-                print(f"   {m['name']}{suffix}  ¥{price:.2f}{tag}")
-            print("-" * 46)
-            print(f"   原价合计：¥{plan['original_total']:.2f}")
-            print(f"   ✓ 满 {plan['threshold']:.0f} 减 {plan['rate']:.0f}%")
-            print(f"   ➡️  实付：¥{plan['final_total']:.2f}")
-            print(f"   🎉 省下：¥{plan['saved']:.2f}")
-            if fam_n:
-                print(f"   🎠 含官方亲子套餐 ×{fam_n}"
-                      f"（1 份大人餐 + 1 份带玩具的儿童餐，成套买更省）")
-            if kid_n:
-                print(f"   🧸 含儿童餐 ×{kid_n}（每名儿童一份带玩具的）")
-            print()
-            # 终端看不了图，但可以把官方图链接给出来
-            print("   🖼  看图（官方产品图，浏览器打开）：")
-            for it in plan["items"][:8]:
-                m = meals[it["code"]]
-                if m.get("img"):
-                    print(f"      {m['name']}\n         {m['img']}")
-            if len(plan["items"]) > 8:
-                print(f"      …… 还有 {len(plan['items']) - 8} 项，"
-                      f"完整带图版见演示页 演示.html")
-            # 算完可以顺手下单（会二次确认，不确认什么都不会发生）
-            if do_order:
-                print()
-                place_order(client, store, plan, meals,
-                            takeway=takeway, remind=remind,
-                            be_type=be_type, order_type=order_type,
-                            be_code=be_code, address_id=address_id,
-                            address_label=address_label)
-        else:
-            print(f"   ¥{budget} 这个预算够不着门店活动门槛，"
-                  f"最低门槛是 ¥{min(t[0] for t in tiers):.0f}。"
-                  if tiers else "   没有可用方案。")
-        print()
-        print(f"   {SLOGAN}")
-        return
-
-    # ---------- 无预算：给几个档次的方案做参考 ----------
-    print("=" * 46)
-    print("  💡 常见预算下的最省方案")
-    print("=" * 46)
-    base = min((t[0] for t in tiers), default=300)
-    checked = False
-    for b in [int(base), int(base * 2), int(base * 4)]:
-        plan = plan_cheapest(meals, promotions, b)
-        if plan:
-            checked = True
-            print(f"   预算 ¥{b}：凑到 ¥{plan['original_total']:.2f}"
-                  f" → 实付 ¥{plan['final_total']:.2f}"
-                  f"（省 ¥{plan['saved']:.2f}，{len(plan['items'])} 件）")
-    if not checked:
-        print("   （当前门店活动门槛较高，需要更大预算才能触发。）")
+    # ---------- 既没点名要什么，也没说要先看看 ----------
+    print("   告诉我要什么，我才好点。例如：")
+    print('      python mai_mai.py --store <门店编码> --items "巨无霸,冰美式中杯"')
+    print("   还不知道吃啥？先看看这家店有什么：")
+    print("      python mai_mai.py --store <门店编码> --show")
     print()
     print(f"   {SLOGAN}")
 
@@ -693,15 +649,7 @@ def main():
                          "不知道吃啥时用这个")
     ap.add_argument("--items", default="",
                     help="直接点名要什么（逗号分隔），例：--items 麦辣鸡腿堡套餐,可乐中杯。"
-                         "给了它就照单点，不用报预算——这是「说一句就下单」的主路")
-    ap.add_argument("--budget", type=int, help="预算金额，直接出最省方案")
-    ap.add_argument("--diners", choices=["adult", "kids", "mixed"],
-                    default="adult",
-                    help="用餐人构成：adult 仅成人 / kids 亲子 / mixed 成人+亲子")
-    ap.add_argument("--kids", type=int, default=0, help="儿童人数")
-    ap.add_argument("--kid-picks", default="",
-                    help="逐个娃点口味，逗号分隔（汉堡 / 鱼排堡 / 麦乐鸡 / 都行），"
-                         "例：--kid-picks 汉堡,麦乐鸡，不填=都行按最省")
+                         "这是「说一句就下单」的主路")
     ap.add_argument("--order", action="store_true",
                     help="算完直接下单（会有二次确认，确认后才真创建订单）")
     ap.add_argument("--takeway", default=None,
@@ -711,29 +659,30 @@ def main():
                          "地址是外送唯一送错就回不了头的东西")
     ap.add_argument("--address", type=int, default=None,
                     help="用第几个收货地址（配 --delivery 用，默认第 1 个）")
+    ap.add_argument("--new-address", dest="new_address", default=None,
+                    help="从 JSON 文件新增一条收货地址（配 --delivery 用）。"
+                         "字段：city / contactName / phone / address / addressDetail "
+                         "（选填 gender）；phone 要 11 位纯数字。"
+                         "⚠️ 会真往账号加地址，加前有二次确认")
     ap.add_argument("--remind", default="",
                     help="下单备注（≤50 字），例如「不要酸瓜」")
     args = ap.parse_args()
-
-    kid_picks = [s.strip() for s in args.kid_picks.split(",")
-                 if s.strip()] if args.kid_picks else []
 
     if not args.store and not (args.city or args.keyword):
         # 没给任何定位信息，给个提示
         print(f"  {SLOGAN}\n")
         print("请指定门店或位置，例如：")
         print("  python mai_mai.py --city 北京 --keyword 嘉秀")
-        print("  python mai_mai.py --store 1950751 --budget 500")
-        print("  python mai_mai.py --store 1950751 --budget 500 \\")
-        print("                     --diners mixed --kids 2")
+        print('  python mai_mai.py --store 1950751 --items "巨无霸,冰美式中杯"')
+        print("  python mai_mai.py --store 1950751 --show")
         return
 
     try:
-        run(args.store, args.city, args.keyword, args.budget,
-            args.diners, args.kids, kid_picks,
+        run(args.store, args.city, args.keyword,
             do_order=args.order, takeway=args.takeway, remind=args.remind,
             items=[s.strip() for s in args.items.split(",") if s.strip()],
-            show=args.show, delivery=args.delivery, address_idx=args.address)
+            show=args.show, delivery=args.delivery, address_idx=args.address,
+            new_address_file=args.new_address)
     except McdError as e:
         print(f"✗ 出错了：{e}", file=sys.stderr)
         sys.exit(1)

@@ -144,3 +144,54 @@ def delivery_stores(client, address_id, be_type=2):
                 s.get("storeName", ""),
             ))
     return out
+
+
+def create_address(client, city, contact_name, phone, address,
+                   address_detail, gender=None):
+    """新增一条收货地址（外送用），返回 Address。
+
+    ⚠️ 这是**写操作**：会真的往账号里加一条地址，而且官方 MCP
+       **没有「删除地址」的工具** —— 加进去就在账号里了，
+       要清只能用户自己到麦当劳 App／小程序里删。
+       ⇒ 能不加就不加；加之前必须让用户点头。
+
+    字段（2026-10-11 由 `tools/list` 核实，非推测）：
+        必填：city / contactName / phone / address / addressDetail
+        选填：gender（"先生" / "女士"）
+        phone 要 **11 位纯数字**（以 1 开头）；带横杠、空格会被拒。
+    """
+    args = {
+        "city": city,
+        "contactName": contact_name,
+        "phone": phone,
+        "address": address,
+        "addressDetail": address_detail,
+    }
+    if gender:
+        args["gender"] = gender
+
+    raw = client.call("delivery-create-address", args)
+
+    # 返回结构官方没给样例，这儿把几种可能都认一遍（别指望字段名能自动对上）
+    data = raw.get("data") if isinstance(raw, dict) else None
+    if isinstance(data, dict):
+        d = dict(data)
+    elif isinstance(data, list) and data and isinstance(data[0], dict):
+        d = dict(data[0])
+    elif isinstance(raw, dict):
+        d = dict(raw)
+    else:
+        d = {}
+
+    aid = d.get("addressId") or d.get("address_id") or d.get("id")
+    if not aid:
+        raise ValueError(
+            f"新增地址没拿到 addressId，原始返回：{str(raw)[:300]}"
+        )
+
+    # 补齐「查地址」那套字段名，好让 Address 类直接用
+    d["addressId"] = str(aid)
+    d.setdefault("contactName", contact_name)
+    d.setdefault("phone", phone)
+    d.setdefault("fullAddress", f"{city}{address}{address_detail}")
+    return Address(d)
